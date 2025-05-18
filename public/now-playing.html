@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Now Playing</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background-color: transparent;
+      font-family: "Arial", sans-serif;
+      color: white;
+    }
+    
+    .now-playing-container {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      padding: 15px;
+      background-color: rgba(0, 0, 0, 0.5);
+      border-radius: 8px;
+      max-width: 400px;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+      transition: opacity 0.5s ease-in-out;
+      opacity: 0;
+    }
+    
+    .now-playing-container.visible {
+      opacity: 1;
+    }
+    
+    .now-playing-label {
+      font-size: 14px;
+      text-transform: uppercase;
+      margin-bottom: 5px;
+      color: #9147ff; /* Twitch purple */
+      font-weight: bold;
+    }
+    
+    .song-title {
+      font-size: 18px;
+      font-weight: bold;
+      margin-bottom: 5px;
+      text-shadow: 1px 1px 2px black;
+    }
+    
+    .progress-container {
+      width: 100%;
+      height: 6px;
+      background-color: rgba(255, 255, 255, 0.3);
+      border-radius: 3px;
+      margin-top: 8px;
+      overflow: hidden;
+    }
+    
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #9147ff, #00ffaa);
+      border-radius: 3px;
+      width: 0%;
+      transition: width 0.5s ease-in-out;
+    }
+    
+    .status-text {
+      font-size: 14px;
+      margin-top: 5px;
+      color: rgba(255, 255, 255, 0.8);
+    }
+    
+    .marquee {
+      white-space: nowrap;
+      overflow: hidden;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    
+    @keyframes marquee {
+      0% { transform: translateX(0); }
+      100% { transform: translateX(-100%); }
+    }
+    
+    .marquee-content {
+      display: inline-block;
+      will-change: transform;
+      animation: marquee 15s linear infinite;
+    }
+    
+    .marquee-content.pause {
+      animation-play-state: paused;
+    }
+    
+    .hidden {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="now-playing" class="now-playing-container">
+    <div class="now-playing-label">Now Playing</div>
+    <div class="song-title marquee">
+      <div id="title-text" class="marquee-content">Waiting for song...</div>
+    </div>
+    <div class="progress-container">
+      <div id="progress-bar" class="progress-bar"></div>
+    </div>
+    <div id="status-text" class="status-text">Idle</div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const nowPlayingContainer = document.getElementById('now-playing');
+    const titleText = document.getElementById('title-text');
+    const progressBar = document.getElementById('progress-bar');
+    const statusText = document.getElementById('status-text');
+    
+    // Helper to handle text that's too long
+    function setupMarquee() {
+      const songTitle = document.querySelector('.song-title');
+      const marqueeContent = document.getElementById('title-text');
+      
+      // Reset animation
+      marqueeContent.style.animation = 'none';
+      setTimeout(() => {
+        marqueeContent.style.animation = '';
+      }, 10);
+      
+      // Only activate marquee if text is too long
+      if (marqueeContent.offsetWidth > songTitle.offsetWidth) {
+        marqueeContent.classList.remove('pause');
+      } else {
+        marqueeContent.classList.add('pause');
+      }
+    }
+    
+    // Update for song processing
+    socket.on('song-update', (data) => {
+      console.log('Song update received:', data);
+      
+      // Make widget visible when we have song data
+      nowPlayingContainer.classList.add('visible');
+      
+      // Update title and status
+      if (data.title) {
+        // Remove unwanted characters that might be coming from YouTube titles
+        const cleanTitle = data.title.replace(/\uDB40\uDC00|\u0000/g, '');
+        titleText.textContent = cleanTitle || 'Processing song...';
+      } else {
+        titleText.textContent = 'Processing song...';
+      }
+      
+      statusText.textContent = data.status || 'Processing...';
+      
+      // Update progress bar
+      if (data.progress !== undefined) {
+        progressBar.style.width = `${data.progress}%`;
+      }
+      
+      // Handle completion or error states
+      if (data.finished || data.error) {
+        // Hide the widget after 5 seconds when the song is done
+        if (data.finished) {
+          setTimeout(() => {
+            nowPlayingContainer.classList.remove('visible');
+          }, 5000);
+        }
+      }
+      
+      // Set up marquee if text is too long
+      setupMarquee();
+    });
+    
+    // Handle converted song playback
+    socket.on('play-converted-song', (data) => {
+      console.log('Play converted song received:', data);
+      
+      nowPlayingContainer.classList.add('visible');
+      
+      // Clean the title from any unwanted characters
+      if (data.title) {
+        const cleanTitle = data.title.replace(/\uDB40\uDC00|\u0000/g, '');
+        titleText.textContent = cleanTitle;
+      } else {
+        titleText.textContent = 'Now Playing';
+      }
+      
+      progressBar.style.width = '100%';
+      statusText.textContent = 'Now Playing';
+      
+      // Set up marquee if text is too long
+      setupMarquee();
+    });
+    
+    // Hide when a song stops playing
+    socket.on('song-finished', () => {
+      nowPlayingContainer.classList.remove('visible');
+    });
+    
+    // Initial setup
+    window.addEventListener('load', () => {
+      setupMarquee();
+      
+      // Responsive adjustments
+      window.addEventListener('resize', setupMarquee);
+    });
+  </script>
+</body>
+</html> 

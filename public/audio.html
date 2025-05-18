@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Audio Player</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      background-color: #f5f5f5;
+    }
+    h1 {
+      color: #6441a5;
+      text-align: center;
+    }
+    .audio-container {
+      margin-top: 20px;
+      padding: 15px;
+      background-color: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+    .status-container {
+      margin-bottom: 15px;
+      padding: 10px;
+      border-radius: 5px;
+      background-color: #eee;
+    }
+    #status-text {
+      font-weight: bold;
+      color: #333;
+    }
+    .audio-controls {
+      margin-top: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .volume-control {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 15px;
+    }
+    #volumeSlider {
+      flex-grow: 1;
+    }
+    .visualizer-container {
+      height: 150px;
+      background-color: #111;
+      border-radius: 5px;
+      margin-bottom: 15px;
+      position: relative;
+      overflow: hidden;
+    }
+    canvas {
+      width: 100%;
+      height: 100%;
+    }
+    .song-info {
+      margin-top: 20px;
+      padding: 10px;
+      background-color: #6441a5;
+      color: white;
+      border-radius: 5px;
+    }
+    #song-title {
+      font-weight: bold;
+      margin-bottom: 5px;
+    }
+    #song-progress {
+      margin-top: 5px;
+      height: 5px;
+      background-color: #ddd;
+      border-radius: 3px;
+    }
+    #song-progress-bar {
+      height: 100%;
+      background-color: #8A2BE2;
+      border-radius: 3px;
+      width: 0%;
+    }
+  </style>
+</head>
+<body>
+  <h1>AI Audio Player</h1>
+  
+  <div class="audio-container">
+    <div class="status-container">
+      <div id="status-text">Connected to voice server</div>
+    </div>
+    
+    <div class="visualizer-container">
+      <canvas id="visualizer"></canvas>
+    </div>
+    
+    <div class="volume-control">
+      <label for="volumeSlider">Volume:</label>
+      <input type="range" id="volumeSlider" min="0" max="1" step="0.1" value="1">
+      <span id="volumeValue">100%</span>
+    </div>
+    
+    <div class="song-info" id="song-info" style="display: none;">
+      <div id="song-title">No song playing</div>
+      <div id="song-artist"></div>
+      <div id="song-progress">
+        <div id="song-progress-bar"></div>
+      </div>
+    </div>
+  </div>
+
+  <audio id="audio-player" autoplay></audio>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const statusText = document.getElementById('status-text');
+    const audioPlayer = document.getElementById('audio-player');
+    const volumeSlider = document.getElementById('volumeSlider');
+    const volumeValue = document.getElementById('volumeValue');
+    const songInfo = document.getElementById('song-info');
+    const songTitle = document.getElementById('song-title');
+    const songArtist = document.getElementById('song-artist');
+    const songProgressBar = document.getElementById('song-progress-bar');
+    
+    // Audio context and visualization
+    let audioContext;
+    let analyser;
+    let source;
+    let audioQueue = [];
+    let isPlaying = false;
+    const canvas = document.getElementById('visualizer');
+    const canvasCtx = canvas.getContext('2d');
+    
+    // Initialize audio context on user interaction
+    document.body.addEventListener('click', initAudio, { once: true });
+    
+    function initAudio() {
+      try {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        console.log('Audio context initialized');
+        
+        // Connect audio element to analyzer for visualizations
+        source = audioContext.createMediaElementSource(audioPlayer);
+        source.connect(analyser);
+        analyser.connect(audioContext.destination);
+        
+        // Start visualization
+        visualize();
+      } catch (e) {
+        console.error('Failed to initialize audio context:', e);
+      }
+    }
+    
+    // Visualizer function
+    function visualize() {
+      if (!audioContext || !analyser) return;
+      
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+      
+      // Make canvas full width
+      canvas.width = canvas.clientWidth;
+      canvas.height = canvas.clientHeight;
+      
+      const draw = () => {
+        requestAnimationFrame(draw);
+        
+        analyser.getByteFrequencyData(dataArray);
+        
+        canvasCtx.fillStyle = 'rgb(17, 17, 17)';
+        canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        const barWidth = (canvas.width / bufferLength) * 2.5;
+        let barHeight;
+        let x = 0;
+        
+        for (let i = 0; i < bufferLength; i++) {
+          barHeight = dataArray[i] / 255 * canvas.height;
+          
+          canvasCtx.fillStyle = `rgb(${dataArray[i] + 100}, 50, ${255 - dataArray[i]})`;
+          canvasCtx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+          
+          x += barWidth + 1;
+        }
+      };
+      
+      draw();
+    }
+    
+    // Volume control
+    volumeSlider.addEventListener('input', () => {
+      const volume = volumeSlider.value;
+      audioPlayer.volume = volume;
+      volumeValue.textContent = `${Math.round(volume * 100)}%`;
+    });
+    
+    // Process audio chunks as they arrive
+    socket.on('audio-chunk', (data) => {
+      statusText.textContent = 'Receiving audio...';
+      
+      const audioData = atob(data.chunk);
+      const arrayBuffer = new ArrayBuffer(audioData.length);
+      const uint8Array = new Uint8Array(arrayBuffer);
+      
+      for (let i = 0; i < audioData.length; i++) {
+        uint8Array[i] = audioData.charCodeAt(i);
+      }
+      
+      if (audioContext) {
+        // Decode and play the audio chunk
+        audioContext.decodeAudioData(arrayBuffer, (buffer) => {
+          audioQueue.push(buffer);
+          if (!isPlaying) {
+            playNextInQueue();
+          }
+        }).catch(err => {
+          console.error('Error decoding audio data', err);
+          
+          // Fallback to audio element if decoding fails
+          tryFallbackAudio(uint8Array);
+        });
+      } else {
+        // Fallback to audio element
+        tryFallbackAudio(uint8Array);
+      }
+    });
+    
+    function tryFallbackAudio(uint8Array) {
+      try {
+        const blob = new Blob([uint8Array], { type: 'audio/mp3' });
+        const url = URL.createObjectURL(blob);
+        audioPlayer.src = url;
+        audioPlayer.play().catch(err => {
+          console.error('Error playing audio:', err);
+          // Initialize audio context on error
+          initAudio();
+        });
+      } catch (err) {
+        console.error('Fallback audio failed:', err);
+      }
+    }
+    
+    // Update for song processing
+    socket.on('song-update', (data) => {
+      songInfo.style.display = 'block';
+      songTitle.textContent = data.title || 'Processing song...';
+      
+      if (data.artist) {
+        songArtist.textContent = `Artist: ${data.artist}`;
+        songArtist.style.display = 'block';
+      } else {
+        songArtist.style.display = 'none';
+      }
+      
+      if (data.progress !== undefined) {
+        songProgressBar.style.width = `${data.progress}%`;
+      }
+      
+      statusText.textContent = data.status || 'Processing song...';
+    });
+    
+    // Handle converted song playback
+    socket.on('play-converted-song', (data) => {
+      try {
+        statusText.textContent = `Playing converted song: ${data.title}`;
+        songInfo.style.display = 'block';
+        songTitle.textContent = data.title || 'Now Playing';
+        songProgressBar.style.width = '100%';
+        
+        // Play the song
+        audioPlayer.src = data.path;
+        audioPlayer.play().catch(err => {
+          console.error('Error playing converted song:', err);
+          statusText.textContent = `Error playing song: ${err.message}`;
+        });
+        
+        // Initialize visualization if needed
+        if (!audioContext) {
+          initAudio();
+        }
+      } catch (error) {
+        console.error('Error handling converted song:', error);
+      }
+    });
+    
+    socket.on('audio-finished', () => {
+      statusText.textContent = 'Audio finished';
+      setTimeout(() => {
+        statusText.textContent = 'Connected to voice server';
+      }, 3000);
+    });
+    
+    socket.on('play-sound-effect', (data) => {
+      statusText.textContent = `Playing sound effect: ${data.soundName}`;
+    });
+    
+    socket.on('reset-audio', () => {
+      // Reset audio state
+      audioQueue = [];
+      isPlaying = false;
+      if (source && typeof source.stop === 'function') {
+        source.stop();
+      }
+      audioPlayer.pause();
+      audioPlayer.src = '';
+      statusText.textContent = 'Audio reset';
+      songInfo.style.display = 'none';
+    });
+    
+    socket.on('subtitle-update', (text) => {
+      statusText.textContent = text;
+    });
+    
+    function playNextInQueue() {
+      if (audioQueue.length === 0) {
+        isPlaying = false;
+        return;
+      }
+      
+      isPlaying = true;
+      const buffer = audioQueue.shift();
+      
+      if (audioContext && buffer) {
+        const source = audioContext.createBufferSource();
+        source.buffer = buffer;
+        source.connect(audioContext.destination);
+        
+        source.onended = () => {
+          playNextInQueue();
+        };
+        
+        source.start(0);
+      }
+    }
+    
+    // Resize canvas on window resize
+    window.addEventListener('resize', () => {
+      if (canvas) {
+        canvas.width = canvas.clientWidth;
+        canvas.height = canvas.clientHeight;
+      }
+    });
+  </script>
+</body>
+</html> 

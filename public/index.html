@@ -1,0 +1,290 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Voice Tester</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    h1 {
+      color: #333;
+    }
+    .form-group {
+      margin-bottom: 15px;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: bold;
+    }
+    input, textarea {
+      width: 100%;
+      padding: 8px;
+      box-sizing: border-box;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+    }
+    button {
+      background-color: #6441a5;
+      color: white;
+      border: none;
+      padding: 10px 15px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+    }
+    button:hover {
+      background-color: #7d5bbe;
+    }
+    .subtitle-preview {
+      margin-top: 20px;
+      padding: 15px;
+      background-color: #f5f5f5;
+      border-radius: 4px;
+      min-height: 50px;
+    }
+    .subtitle-example {
+      margin-top: 20px;
+      padding: 20px;
+      background-color: rgba(0, 0, 0, 0.7);
+      border-radius: 4px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 120px;
+      overflow: hidden;
+    }
+    #preview-text {
+      color: white;
+      -webkit-text-stroke: 2px #8A2BE2;
+      text-stroke: 2px #8A2BE2;
+      font-family: "Comic Sans MS", cursive, sans-serif;
+      font-size: clamp(20px, 5vw, 40px);
+      text-align: center;
+      text-shadow: 3px 3px 5px rgba(0, 0, 0, 0.8);
+      width: 100%;
+      overflow-wrap: break-word;
+      hyphens: auto;
+      word-wrap: break-word;
+    }
+  </style>
+</head>
+<body>
+  <h1>AI Voice Tester</h1>
+  <p>Use this page to test the AI's voice without connecting to Twitch.</p>
+  
+  <div class="form-group">
+    <label for="username">Username:</label>
+    <input type="text" id="username" placeholder="Enter a username" value="Tester">
+  </div>
+  
+  <div class="form-group">
+    <label for="message">Message:</label>
+    <textarea id="message" rows="4" placeholder="Type a message for the AI to respond to"></textarea>
+  </div>
+  
+  <button id="sendBtn">Send Message</button>
+  
+  <div class="subtitle-preview">
+    <h3>Current Text Response:</h3>
+    <p id="subtitle-display">AI is ready to speak...</p>
+  </div>
+  
+  <div class="subtitle-example">
+    <p id="preview-text">AI is ready to speak...</p>
+  </div>
+  
+  <audio id="audio-player" autoplay></audio>
+  
+  <p>View the <a href="/subtitles" target="_blank">subtitles page</a> for OBS.</p>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const sendBtn = document.getElementById('sendBtn');
+    const usernameInput = document.getElementById('username');
+    const messageInput = document.getElementById('message');
+    const subtitleDisplay = document.getElementById('subtitle-display');
+    const previewText = document.getElementById('preview-text');
+    const audioPlayer = document.getElementById('audio-player');
+    
+    // Audio context for streaming audio
+    let audioContext;
+    let audioSource;
+    let audioQueue = [];
+    let isPlaying = false;
+    
+    // Initialize audio context on page load
+    try {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      console.log('Audio context initialized');
+    } catch (e) {
+      console.error('Failed to initialize audio context:', e);
+    }
+    
+    // Update subtitle when it changes
+    socket.on('subtitle-update', (text) => {
+      subtitleDisplay.textContent = text;
+      previewText.textContent = text;
+      
+      // Dynamic font size adjustment based on text length
+      const textLength = text.length;
+      if (textLength > 150) {
+        previewText.style.fontSize = 'clamp(16px, 3vw, 32px)';
+      } else if (textLength > 100) {
+        previewText.style.fontSize = 'clamp(18px, 3.5vw, 36px)';
+      } else if (textLength > 50) {
+        previewText.style.fontSize = 'clamp(20px, 4vw, 38px)';
+      } else {
+        previewText.style.fontSize = 'clamp(20px, 5vw, 40px)';
+      }
+      
+      // Check for overflow
+      checkTextOverflow();
+    });
+    
+    // Process audio chunks as they arrive
+    socket.on('audio-chunk', (data) => {
+      const audioData = atob(data.chunk);
+      const arrayBuffer = new ArrayBuffer(audioData.length);
+      const uint8Array = new Uint8Array(arrayBuffer);
+      
+      for (let i = 0; i < audioData.length; i++) {
+        uint8Array[i] = audioData.charCodeAt(i);
+      }
+      
+      if (audioContext) {
+        // Decode and play the audio chunk
+        audioContext.decodeAudioData(arrayBuffer, (buffer) => {
+          audioQueue.push(buffer);
+          if (!isPlaying) {
+            playNextInQueue();
+          }
+        }).catch(err => {
+          console.error('Error decoding audio data', err);
+          
+          // Fallback to old method
+          tryFallbackAudio(uint8Array);
+        });
+      } else {
+        // Fallback to old method using audio element
+        tryFallbackAudio(uint8Array);
+      }
+    });
+    
+    function tryFallbackAudio(uint8Array) {
+      try {
+        const blob = new Blob([uint8Array], { type: 'audio/mp3' });
+        const url = URL.createObjectURL(blob);
+        audioPlayer.src = url;
+        audioPlayer.play().catch(err => {
+          console.error('Error playing audio:', err);
+        });
+      } catch (err) {
+        console.error('Fallback audio failed:', err);
+      }
+    }
+    
+    socket.on('audio-finished', () => {
+      console.log('Audio stream finished');
+    });
+    
+    socket.on('reset-audio', () => {
+      // Reset audio state
+      audioQueue = [];
+      isPlaying = false;
+      if (audioSource) {
+        audioSource.stop();
+        audioSource = null;
+      }
+      audioPlayer.pause();
+      audioPlayer.src = '';
+    });
+    
+    function playNextInQueue() {
+      if (audioQueue.length === 0) {
+        isPlaying = false;
+        return;
+      }
+      
+      isPlaying = true;
+      const buffer = audioQueue.shift();
+      audioSource = audioContext.createBufferSource();
+      audioSource.buffer = buffer;
+      audioSource.connect(audioContext.destination);
+      
+      audioSource.onended = () => {
+        playNextInQueue();
+      };
+      
+      audioSource.start(0);
+    }
+    
+    // Check if text is overflowing the container
+    function checkTextOverflow() {
+      const textElem = previewText;
+      const container = textElem.parentElement;
+      
+      if (textElem.scrollWidth > container.clientWidth || 
+          textElem.scrollHeight > container.clientHeight) {
+        // Get current font size and reduce it
+        const currentSize = parseFloat(getComputedStyle(textElem).fontSize);
+        textElem.style.fontSize = (currentSize * 0.9) + 'px';
+        
+        // Check again if we need to reduce further
+        if (textElem.scrollWidth > container.clientWidth ||
+            textElem.scrollHeight > container.clientHeight) {
+          setTimeout(checkTextOverflow, 10);
+        }
+      }
+    }
+    
+    // Check on resize too
+    window.addEventListener('resize', checkTextOverflow);
+    
+    // Send message to API
+    sendBtn.addEventListener('click', async () => {
+      const username = usernameInput.value.trim() || 'Tester';
+      const message = messageInput.value.trim();
+      
+      if (!message) {
+        alert('Please enter a message');
+        return;
+      }
+      
+      try {
+        sendBtn.disabled = true;
+        sendBtn.textContent = 'Processing...';
+        
+        const response = await fetch('/api/speak', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ username, message })
+        });
+        
+        const data = await response.json();
+        
+        if (!data.success) {
+          throw new Error(data.error || 'Unknown error');
+        }
+        
+        messageInput.value = '';
+      } catch (error) {
+        console.error('Error:', error);
+        alert('Error: ' + error.message);
+      } finally {
+        sendBtn.disabled = false;
+        sendBtn.textContent = 'Send Message';
+      }
+    });
+  </script>
+</body>
+</html>

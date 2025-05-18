@@ -1,0 +1,208 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Subtitles</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background-color: transparent;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      font-family: "Comic Sans MS", cursive, sans-serif;
+    }
+    
+    #subtitle {
+      color: white;
+      -webkit-text-stroke: 2px #8A2BE2; /* Purple outline for text */
+      text-stroke: 2px #8A2BE2;
+      font-size: clamp(20px, 5vw, 60px); /* Responsive font size with min and max limits */
+      text-align: center;
+      width: 90vw; /* Limit width to ensure it fits on screen */
+      word-wrap: break-word; /* Ensure text wraps */
+      line-height: 1.3;
+      margin: 0 auto;
+      text-shadow: 3px 3px 5px rgba(0, 0, 0, 0.8);
+      transition: font-size 0.3s ease;
+      overflow-wrap: break-word;
+      hyphens: auto;
+    }
+    
+    /* Media queries for better scaling */
+    @media (min-width: 1200px) {
+      #subtitle {
+        font-size: 60px; /* Max font size */
+        max-width: 1000px; /* Limit width on large screens */
+      }
+    }
+    
+    @media (max-width: 768px) {
+      #subtitle {
+        font-size: 7vw; /* Larger relative font on smaller screens */
+      }
+    }
+    
+    @media (max-width: 480px) {
+      #subtitle {
+        font-size: 8vw; /* Even larger for very small screens */
+      }
+    }
+    
+    #audio-player {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      opacity: 0;
+      height: 1px;
+      width: 1px;
+    }
+  </style>
+</head>
+<body>
+  <div id="subtitle">AI is ready to speak...</div>
+  <audio id="audio-player" autoplay></audio>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const subtitleElement = document.getElementById('subtitle');
+    const audioPlayer = document.getElementById('audio-player');
+    
+    // Audio context for streaming audio
+    let audioContext;
+    let audioSource;
+    let audioQueue = [];
+    let isPlaying = false;
+    
+    // Initialize audio context on user interaction
+    document.body.addEventListener('click', initAudio, { once: true });
+    
+    function initAudio() {
+      try {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        console.log('Audio context initialized');
+      } catch (e) {
+        console.error('Failed to initialize audio context:', e);
+      }
+    }
+    
+    // Process audio chunks as they arrive
+    socket.on('audio-chunk', (data) => {
+      const audioData = atob(data.chunk);
+      const arrayBuffer = new ArrayBuffer(audioData.length);
+      const uint8Array = new Uint8Array(arrayBuffer);
+      
+      for (let i = 0; i < audioData.length; i++) {
+        uint8Array[i] = audioData.charCodeAt(i);
+      }
+      
+      if (audioContext) {
+        // Decode and play the audio chunk
+        audioContext.decodeAudioData(arrayBuffer, (buffer) => {
+          audioQueue.push(buffer);
+          if (!isPlaying) {
+            playNextInQueue();
+          }
+        }).catch(err => {
+          console.error('Error decoding audio data', err);
+          
+          // Fallback to audio element if decoding fails
+          tryFallbackAudio(uint8Array);
+        });
+      } else {
+        // Fallback to old method using audio element
+        tryFallbackAudio(uint8Array);
+      }
+    });
+    
+    function tryFallbackAudio(uint8Array) {
+      try {
+        const blob = new Blob([uint8Array], { type: 'audio/mp3' });
+        const url = URL.createObjectURL(blob);
+        audioPlayer.src = url;
+        audioPlayer.play().catch(err => {
+          console.error('Error playing audio:', err);
+          // Initialize audio context on error, might be needed for autoplay
+          initAudio();
+        });
+      } catch (err) {
+        console.error('Fallback audio failed:', err);
+      }
+    }
+    
+    socket.on('audio-finished', () => {
+      console.log('Audio stream finished');
+    });
+    
+    socket.on('reset-audio', () => {
+      // Reset audio state
+      audioQueue = [];
+      isPlaying = false;
+      if (audioSource) {
+        audioSource.stop();
+        audioSource = null;
+      }
+      audioPlayer.pause();
+      audioPlayer.src = '';
+    });
+    
+    function playNextInQueue() {
+      if (audioQueue.length === 0) {
+        isPlaying = false;
+        return;
+      }
+      
+      isPlaying = true;
+      const buffer = audioQueue.shift();
+      audioSource = audioContext.createBufferSource();
+      audioSource.buffer = buffer;
+      audioSource.connect(audioContext.destination);
+      
+      audioSource.onended = () => {
+        playNextInQueue();
+      };
+      
+      audioSource.start(0);
+    }
+    
+    // Update subtitle when it changes
+    socket.on('subtitle-update', (text) => {
+      subtitleElement.textContent = text;
+      
+      // Dynamic font size adjustment based on text length
+      const textLength = text.length;
+      if (textLength > 150) {
+        subtitleElement.style.fontSize = 'clamp(16px, 3vw, 40px)';
+      } else if (textLength > 100) {
+        subtitleElement.style.fontSize = 'clamp(18px, 3.5vw, 50px)';
+      } else if (textLength > 50) {
+        subtitleElement.style.fontSize = 'clamp(20px, 4vw, 55px)';
+      } else {
+        subtitleElement.style.fontSize = 'clamp(20px, 5vw, 60px)'; // Default
+      }
+    });
+    
+    // Periodically check if subtitle text is overflowing and adjust size if needed
+    function checkTextOverflow() {
+      const subtitleWidth = subtitleElement.offsetWidth;
+      const containerWidth = window.innerWidth * 0.9; // 90% of viewport width
+      
+      if (subtitleWidth > containerWidth) {
+        // Get current font size and reduce it a bit
+        const currentSize = parseFloat(getComputedStyle(subtitleElement).fontSize);
+        subtitleElement.style.fontSize = (currentSize * 0.9) + 'px';
+      }
+    }
+    
+    // Check overflow on subtitle updates and window resize
+    socket.on('subtitle-update', checkTextOverflow);
+    window.addEventListener('resize', checkTextOverflow);
+  </script>
+</body>
+</html>
